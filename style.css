@@ -944,6 +944,67 @@ body {
 }
 
 /* ========================================================
+   TOAST NOTIFICATIONS (live update info)
+   ======================================================== */
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: min(24rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.8rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--info);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-main);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.4;
+  opacity: 0;
+  transform: translateX(120%);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.toast-text {
+  flex: 1;
+}
+
+.toast-success {
+  border-left-color: var(--success);
+}
+
+.toast-warn {
+  border-left-color: var(--accent);
+}
+
+.toast-info {
+  border-left-color: var(--info);
+}
+
+/* ========================================================
    SCREEN: RESULT, SCORE & EVALUATION
    ======================================================== */
 .result-container {
@@ -1515,6 +1576,21 @@ body {
 }
 
 @media (max-width: 600px) {
+  .toast-container {
+    top: auto;
+    bottom: 1rem;
+    left: 1rem;
+    right: 1rem;
+    max-width: none;
+  }
+
+  .toast {
+    transform: translateY(120%);
+  }
+
+  .toast.show {
+    transform: translateY(0);
+  }
   .header-inner {
     padding: 0.75rem 1rem;
   }
@@ -1568,6 +1644,9 @@ body {
    PRINT STYLESHEET (RAPOR HASIL RESMI PDF / CETAK)
    ======================================================== */
 @media print {
+  .toast-container {
+    display: none !important;
+  }
   body {
     background: white !important;
     color: black !important;

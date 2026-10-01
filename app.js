@@ -3,6 +3,12 @@
 // ========================================================
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Local Storage Keys
+  const SESSION_KEY = 'cbt_fiqih_session_v1';
+
+  // Update Polling Config
+  const UPDATE_POLL_MS = 60000;
+
   // Global State
   const state = {
     student: {
@@ -20,7 +26,12 @@ document.addEventListener('DOMContentLoaded', () => {
     elapsedSeconds: 0,
     isExamRunning: false,
     currentFilter: 'all',
-    theme: localStorage.getItem('cbt_fiqih_theme') || 'light'
+    theme: localStorage.getItem('cbt_fiqih_theme') || 'light',
+    build: null,
+    dataHash: null,
+    appHash: null,
+    updateTimer: null,
+    saveTimer: null
   };
 
   // DOM Elements
@@ -109,6 +120,249 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ========================================================
+  // 1B. TOAST NOTIFICATION
+  // ========================================================
+  const toastContainer = document.getElementById('toastContainer');
+
+  function showToast(message, type = 'info', duration = 6000) {
+    if (!toastContainer) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.setAttribute('role', 'status');
+    toast.innerHTML = `<span class="toast-icon">${type === 'success' ? '✅' : type === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="toast-text"></span>`;
+    toast.querySelector('.toast-text').textContent = message;
+    toastContainer.appendChild(toast);
+
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 400);
+    }, duration);
+  }
+
+  // ========================================================
+  // 1C. SESSION PERSISTENCE (ANTI-REFRESH DATA LOSS)
+  // ========================================================
+  function saveSession() {
+    if (!state.isExamRunning) return;
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify({
+        student: state.student,
+        answers: state.answers,
+        flagged: Array.from(state.flagged),
+        currentIndex: state.currentIndex,
+        startTime: state.startTime,
+        remainingSeconds: state.remainingSeconds,
+        elapsedSeconds: state.elapsedSeconds,
+        isExamRunning: true,
+        savedAt: Date.now()
+      }));
+    } catch (err) {
+      // Kuota localStorage penuh atau dinonaktifkan - abaikan, ujian tetap berjalan
+    }
+  }
+
+  function scheduleSave() {
+    if (state.saveTimer) clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(() => {
+      state.saveTimer = null;
+      saveSession();
+    }, 400);
+  }
+
+  function clearSession() {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+    } catch (err) {
+      // abaikan
+    }
+  }
+
+  function readSession() {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || !data.isExamRunning || !data.answers) return null;
+      if (typeof data.student?.name !== 'string' || !data.student.name.trim()) return null;
+      return data;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function startTimer() {
+    if (state.timerInterval) clearInterval(state.timerInterval);
+
+    if (state.student.durationMinutes > 0) {
+      updateTimerDisplay();
+      timerBox.classList.toggle('warning', state.remainingSeconds <= 300);
+      state.timerInterval = setInterval(handleTimerTick, 1000);
+    } else {
+      timerCountdown.textContent = 'Mode Santai (Tanpa Batas)';
+      state.timerInterval = setInterval(() => {
+        state.elapsedSeconds++;
+      }, 1000);
+    }
+  }
+
+  function applyExamScreen() {
+    examCurrentStudentName.textContent = state.student.name;
+    examCurrentStudentClass.textContent = state.student.class;
+    avatarLetter.textContent = state.student.name.charAt(0).toUpperCase();
+
+    initPalette();
+    screenIntro.style.display = 'none';
+    screenExam.style.display = 'block';
+    screenResult.style.display = 'none';
+    renderQuestion(state.currentIndex);
+  }
+
+  function restoreSession() {
+    const data = readSession();
+    if (!data) return;
+
+    state.student = data.student;
+    state.answers = data.answers;
+    state.flagged = new Set(Array.isArray(data.flagged) ? data.flagged : []);
+    state.startTime = data.startTime ? new Date(data.startTime) : new Date();
+    state.elapsedSeconds = data.elapsedSeconds || 0;
+    state.remainingSeconds = state.student.durationMinutes > 0 ? data.remainingSeconds : 0;
+    state.currentIndex = Math.min(data.currentIndex || 0, QUESTIONS.length - 1);
+    state.isExamRunning = true;
+
+    // Hitung waktu yang sudah lewat sejak autosave terakhir
+    const awaySeconds = Math.floor((Date.now() - (data.savedAt || Date.now())) / 1000);
+    if (state.student.durationMinutes > 0) {
+      state.remainingSeconds = Math.max(0, state.remainingSeconds - awaySeconds);
+      state.elapsedSeconds += awaySeconds;
+    }
+
+    // Isi ulang form agar data siswa tidak hilang
+    studentNameInput.value = state.student.name;
+    studentClassInput.value = state.student.class;
+    if (examDurationInput.querySelector(`option[value="${state.student.durationMinutes}"]`)) {
+      examDurationInput.value = String(state.student.durationMinutes);
+    }
+
+    applyExamScreen();
+    startTimer();
+
+    const answeredCount = Object.keys(state.answers).length;
+    if (state.student.durationMinutes > 0 && state.remainingSeconds <= 0) {
+      finishExam();
+      return;
+    }
+    showToast(`Sesi tersimpan dipulihkan: ${answeredCount} jawaban Anda aman.`, 'success', 7000);
+  }
+
+  window.addEventListener('pagehide', saveSession);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveSession();
+  });
+
+  // ========================================================
+  // 1D. LIVE DATA UPDATE (SOAL BERUBAH TANPA REFRESH)
+  // ========================================================
+  function validateQuestionData(data) {
+    if (!data || typeof data !== 'object') return false;
+    if (!Array.isArray(data.QUESTIONS) || data.QUESTIONS.length === 0) return false;
+    if (!data.TOPICS || typeof data.TOPICS !== 'object') return false;
+
+    const ids = new Set();
+    for (const q of data.QUESTIONS) {
+      if (!q || typeof q !== 'object') return false;
+      if (typeof q.id !== 'number' || ids.has(q.id)) return false;
+      ids.add(q.id);
+      if (typeof q.question !== 'string' || !q.question.trim()) return false;
+      if (q.type !== 'mcq' && q.type !== 'tf') return false;
+      if (typeof q.topic !== 'string' || !q.topic) return false;
+      if (typeof q.explanation !== 'string') return false;
+      if (!Array.isArray(q.options) || q.options.length < 2) return false;
+
+      const keys = new Set();
+      for (const opt of q.options) {
+        if (!opt || typeof opt.key !== 'string' || keys.has(opt.key)) return false;
+        if (typeof opt.text !== 'string' || !opt.text.trim()) return false;
+        keys.add(opt.key);
+      }
+      if (!keys.has(q.correctAnswer)) return false;
+    }
+    return true;
+  }
+
+  async function fetchQuestionData() {
+    const res = await fetch(`questions.js?_=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const source = await res.text();
+    const factory = new Function(
+      `${source}\n;return { APP_BUILD, TOPICS, TOPIC_RECOMMENDATIONS, QUESTIONS };`
+    );
+    return factory();
+  }
+
+  function applyQuestionData(next) {
+    // Buang jawaban yang soal/jawabannya sudah tidak ada di versi baru
+    const nextById = new Map(next.QUESTIONS.map((q) => [q.id, q]));
+    let removed = 0;
+    for (const qid of Object.keys(state.answers)) {
+      const q = nextById.get(Number(qid));
+      if (!q || !q.options.some((o) => o.key === state.answers[qid])) {
+        delete state.answers[qid];
+        removed++;
+      }
+    }
+    for (const qid of Array.from(state.flagged)) {
+      if (!nextById.has(qid)) state.flagged.delete(qid);
+    }
+
+    const currentId = QUESTIONS[state.currentIndex]?.id;
+    const newIndex = next.QUESTIONS.findIndex((q) => q.id === currentId);
+
+    QUESTIONS = next.QUESTIONS;
+    TOPICS = next.TOPICS;
+    state.currentIndex = newIndex >= 0 ? newIndex : 0;
+
+    if (state.isExamRunning) {
+      applyExamScreen();
+      saveSession();
+    } else if (screenResult.style.display !== 'none' && reviewQuestionsList.children.length > 0) {
+      renderQuestionsReview(state.currentFilter);
+    }
+
+    return removed;
+  }
+
+  async function checkForUpdate() {
+    if (!navigator.onLine) return;
+    try {
+      const res = await fetch(`version.json?_=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const info = await res.json();
+      const remoteBuild = info && info.build;
+      if (!remoteBuild || remoteBuild === state.build) return;
+
+      const next = await fetchQuestionData();
+      if (next.APP_BUILD !== remoteBuild) return;
+      if (!validateQuestionData(next)) return;
+
+      const removed = applyQuestionData(next);
+      state.build = next.APP_BUILD;
+      showToast('Materi soal telah diperbarui. Jawaban Anda tetap tersimpan.', 'success');
+      if (removed > 0) {
+        showToast(`${removed} jawaban tidak lagi tersedia dan dihapus otomatis.`, 'warn', 8000);
+      }
+    } catch (err) {
+      // Jaringan bermasalah - coba lagi pada polling berikutnya
+    }
+  }
+
+  function startUpdatePolling() {
+    if (state.updateTimer) clearInterval(state.updateTimer);
+    state.updateTimer = setInterval(checkForUpdate, UPDATE_POLL_MS);
+  }
+
+  // ========================================================
   // 2. HELPER FUNCTIONS: ARABIC FORMATTING & TIME
   // ========================================================
   function formatArabicContent(text) {
@@ -155,36 +409,17 @@ document.addEventListener('DOMContentLoaded', () => {
     state.startTime = new Date();
     state.isExamRunning = true;
 
-    // Display student info in exam topbar
-    examCurrentStudentName.textContent = state.student.name;
-    examCurrentStudentClass.textContent = state.student.class;
-    avatarLetter.textContent = state.student.name.charAt(0).toUpperCase();
-
-    // Setup Timer
     if (state.student.durationMinutes > 0) {
       state.remainingSeconds = state.student.durationMinutes * 60;
-      state.elapsedSeconds = 0;
-      updateTimerDisplay();
-      state.timerInterval = setInterval(handleTimerTick, 1000);
     } else {
-      // Untimed mode
-      state.elapsedSeconds = 0;
-      timerCountdown.textContent = 'Mode Santai (Tanpa Batas)';
-      state.timerInterval = setInterval(() => {
-        state.elapsedSeconds++;
-      }, 1000);
+      state.remainingSeconds = 0;
     }
+    state.elapsedSeconds = 0;
 
-    // Initialize Question Palette
-    initPalette();
+    applyExamScreen();
+    startTimer();
+    saveSession();
 
-    // Switch views
-    screenIntro.style.display = 'none';
-    screenExam.style.display = 'block';
-    screenResult.style.display = 'none';
-
-    // Render first question
-    renderQuestion(0);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
@@ -205,7 +440,10 @@ document.addEventListener('DOMContentLoaded', () => {
         clearInterval(state.timerInterval);
         alert('Waktu pengerjaan try out telah habis! Jawaban Anda akan otomatis dikumpulkan.');
         finishExam();
+        return;
       }
+
+      scheduleSave();
     }
   }
 
@@ -352,6 +590,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function selectOption(qId, key) {
     state.answers[qId] = key;
+    scheduleSave();
     renderQuestion(state.currentIndex);
   }
 
@@ -362,6 +601,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       state.flagged.add(qId);
     }
+    scheduleSave();
     renderQuestion(state.currentIndex);
   }
 
@@ -449,6 +689,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function finishExam() {
     state.isExamRunning = false;
     clearInterval(state.timerInterval);
+    if (state.saveTimer) {
+      clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+    clearSession();
     state.endTime = new Date();
 
     // 1. Calculate Results
@@ -754,11 +999,19 @@ document.addEventListener('DOMContentLoaded', () => {
   // Retake Exam Button
   btnRetakeExam.addEventListener('click', () => {
     if (confirm('Apakah Anda ingin mengulang try out ini dari awal?')) {
+      clearSession();
       window.scrollTo({ top: 0, behavior: 'smooth' });
       screenResult.style.display = 'none';
       screenExam.style.display = 'none';
       screenIntro.style.display = 'block';
     }
   });
+
+  // ========================================================
+  // 10. BOOTSTRAP: PULIHKAN SESI & AKTIFKAN PEMUTAKHIRAN
+  // ========================================================
+  state.build = typeof APP_BUILD !== 'undefined' ? APP_BUILD : null;
+  restoreSession();
+  startUpdatePolling();
 
 });

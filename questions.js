@@ -1,7 +1,9 @@
 // Data 80 Soal Try Out Ujian Fiqih Kelas 8
 // 40 Pilihan Ganda & 40 Benar/Salah beserta Pembahasan & Kategori Diagnostik
 
-const TOPICS = {
+const APP_BUILD = '2026-10-01a';
+
+let TOPICS = {
   HUKUM_SYARI: "Pengertian Fiqih & 5 Hukum Syar'i",
   THAHARAH_NAJIS: "Syarat Sah Salat, Thaharah & Najis",
   TEMPAT_SALAT: "Ketentuan Tempat Salat",
@@ -21,7 +23,7 @@ const TOPIC_RECOMMENDATIONS = {
   [TOPICS.RUKUN_WAJIB]: "Kuasai 14 rukun salat (thuma'ninah, tartib, sujud pada 7 anggota) dan perbedaan rukun vs wajib salat serta penanganan lupa (sujud sahwi)."
 };
 
-const QUESTIONS = [
+let QUESTIONS = [
   // ================= PILIHAN GANDA (1 - 40) =================
   {
     id: 1,

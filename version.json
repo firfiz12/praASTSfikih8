@@ -1,0 +1,4 @@
+{
+  "build": "2026-10-01a",
+  "note": "Naikkan nilai build setiap kali questions.js diubah agar siswa yang sedang ujian otomatis memuat versi terbaru tanpa refresh."
+}
